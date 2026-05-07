@@ -5,6 +5,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
 from pykrx import stock as krx
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -29,17 +30,13 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ── 포트폴리오 데이터 ────────────────────────────────────
-PORTFOLIO = {
-    '삼성전자':    {'code': '005930', 'shares': 167, 'avg_price': 68_298},
-    '엠씨넥스':    {'code': '097520', 'shares':  60, 'avg_price': 39_850},
-    '동화기업':    {'code': '025900', 'shares':  32, 'avg_price': 31_625},
-    'POSCO홀딩스': {'code': '005490', 'shares':  12, 'avg_price': 668_000},
-    '명신산업':    {'code': '009900', 'shares': 300, 'avg_price': 21_700},
-    '성일하이텍':  {'code': '365340', 'shares':  48, 'avg_price': 149_600},
-    '알테오젠':    {'code': '196170', 'shares':  20, 'avg_price': 465_000},
-    '실리콘투':    {'code': '257720', 'shares': 250, 'avg_price': 50_400},
-}
+# ── 포트폴리오 데이터 (Streamlit Secrets에서 로드) ────────
+try:
+    PORTFOLIO = json.loads(st.secrets["portfolio"]["json"])
+except Exception:
+    st.error("포트폴리오 데이터가 설정되지 않았습니다. Streamlit Cloud → App settings → Secrets를 확인해 주세요.")
+    st.stop()
+
 TOTAL_COST = sum(v['shares'] * v['avg_price'] for v in PORTFOLIO.values())
 STOCK_NAMES = list(PORTFOLIO.keys())
 
