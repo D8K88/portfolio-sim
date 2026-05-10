@@ -81,9 +81,8 @@ def color_pct(v):
 def fetch_realtime(code: str) -> dict | None:
     """
     네이버 금융 실시간 폴링 API (JSON) 사용.
-    - 정규장 중: 실시간 체결가
-    - 장 마감 후: 종가 + 시간외 단일가(있을 경우)
-    JavaScript 렌더링 불필요, 순수 JSON 응답.
+    - 정규장 중: 실시간 체결가  (closePrice)
+    - 장 마감 후: 종가 + 시간외 단일가 (overMarketPriceInfo.overPrice)
     """
     def to_int(v) -> int:
         try:
@@ -99,7 +98,6 @@ def fetch_realtime(code: str) -> dict | None:
             return 0.0
 
     try:
-        # ① 실시간 현재가 (정규장/시간외 공통)
         url = (f"https://polling.finance.naver.com/api/realtime"
                f"/domestic/stock/{code}")
         headers = {
@@ -109,66 +107,46 @@ def fetch_realtime(code: str) -> dict | None:
         r = requests.get(url, headers=headers, timeout=6)
         d = r.json().get('datas', [{}])[0]
 
-        price       = to_int(d.get('closePrice', 0))
-        change      = to_int(d.get('compareToPreviousClosePrice', 0))
-        change_rate = to_float(d.get('fluctuationsRatio', 0))
+        # ① 정규장 종가 / 실시간가
+        price       = to_int(d.get('closePriceRaw') or d.get('closePrice', 0))
+        change      = to_int(d.get('compareToPreviousClosePriceRaw')
+                             or d.get('compareToPreviousClosePrice', 0))
+        change_rate = to_float(d.get('fluctuationsRatioRaw')
+                               or d.get('fluctuationsRatio', 0))
 
-        # 하락이면 음수로
-        trade_type = str(d.get('tradeStopType', ''))
-        if d.get('fluctuationType') in ('FALL', '2') or 'FALL' in trade_type:
+        # 하락이면 음수 처리
+        direction = d.get('compareToPreviousPrice', {}).get('name', '')
+        if direction == 'FALLING':
             change      = -abs(change)
             change_rate = -abs(change_rate)
 
         if price == 0:
             return None
 
-        # ② 시간외 단일가
+        # ② 시간외 단일가 (overMarketPriceInfo.overPrice)
         after_price       = None
         after_change_rate = None
-        try:
-            url2 = (f"https://polling.finance.naver.com/api/realtime"
-                    f"/domestic/stock/{code}/overtime")
-            r2 = requests.get(url2, headers=headers, timeout=4)
-            d2 = r2.json().get('datas', [{}])[0]
-            ap = to_int(d2.get('closePrice', 0))
+        over_info = d.get('overMarketPriceInfo')
+        if over_info:
+            ap = to_int(over_info.get('overPrice', 0))
             if ap and ap != price:
                 after_price       = ap
-                after_change_rate = (ap - price) / price * 100
-        except Exception:
-            pass
+                after_change_rate = to_float(over_info.get('fluctuationsRatio', 0))
+                # 방향 부호
+                after_dir = over_info.get('compareToPreviousPrice', {}).get('name', '')
+                if after_dir == 'FALLING':
+                    after_change_rate = -abs(after_change_rate)
 
         return {
-            'price':            price,
-            'change':           change,
-            'change_rate':      change_rate,
-            'after_price':      after_price,
+            'price':             price,
+            'change':            change,
+            'change_rate':       change_rate,
+            'after_price':       after_price,
             'after_change_rate': after_change_rate,
-            'is_after':         after_price is not None,
+            'is_after':          after_price is not None,
         }
     except Exception:
         return None
-
-@st.cache_data(ttl=60, show_spinner=False)
-def debug_api_response(code: str) -> dict:
-    """삼성전자 API 원본 응답 확인용 (디버그)"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'Referer': 'https://finance.naver.com/',
-    }
-    result = {}
-    try:
-        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
-        r = requests.get(url, headers=headers, timeout=6)
-        result['polling_api'] = r.json()
-    except Exception as e:
-        result['polling_api_error'] = str(e)
-    try:
-        url2 = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        r2 = requests.get(url2, headers=headers, timeout=6)
-        result['mobile_api'] = r2.json()
-    except Exception as e:
-        result['mobile_api_error'] = str(e)
-    return result
 
 # ── 사이드바 ─────────────────────────────────────────────
 with st.sidebar:
@@ -273,11 +251,6 @@ if scenario.startswith("0"):
         st.plotly_chart(fig, use_container_width=True)
 
     st.caption(f"조회 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-    # ── 임시 디버그 (API 원본 응답 확인) ──
-    with st.expander("🔧 API 디버그 (삼성전자 005930)"):
-        debug = debug_api_response("005930")
-        st.json(debug)
 
 # ════════════════════════════════════════════════════════
 #   시나리오 1: 특정 날짜 전종목 매도
