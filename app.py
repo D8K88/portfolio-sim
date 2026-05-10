@@ -76,43 +76,88 @@ def color_pct(v):
     if v is None: return 'black'
     return '#0066cc' if v >= 0 else '#cc0000'
 
-# ── 실시간 시세 조회 (네이버 금융, 캐시 1분) ─────────────
+# ── 실시간 시세 조회 (네이버 금융 HTML 파싱, 캐시 1분) ────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_realtime(code: str) -> dict | None:
     """
-    네이버 금융 모바일 API로 실시간 현재가 + 시간외 단일가 조회.
-    반환: {price, change, change_rate, after_price, after_change_rate, is_after}
+    네이버 금융 PC 페이지 파싱으로 실시간 현재가 + 시간외 단일가 조회.
+    - 정규장 중: 실시간 체결가
+    - 장 마감 후: 종가 + 시간외 단일가(있을 경우)
     """
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'}
-        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-        r = requests.get(url, headers=headers, timeout=5)
-        d = r.json()
+        from bs4 import BeautifulSoup
+        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'ko-KR,ko;q=0.9',
+            'Referer': 'https://finance.naver.com/',
+        }
+        r = requests.get(url, headers=headers, timeout=8)
+        r.encoding = 'euc-kr'
+        soup = BeautifulSoup(r.text, 'html.parser')
 
-        def to_int(s):
-            return int(str(s).replace(',', '').replace('+', '')) if s else 0
-        def to_float(s):
-            return float(str(s).replace(',', '').replace('+', '').replace('%', '')) if s else 0.0
+        def parse_num(sel) -> float | None:
+            el = soup.select_one(sel)
+            if not el:
+                return None
+            txt = el.get_text(strip=True).replace(',', '').replace('+', '')
+            try:
+                return float(txt)
+            except ValueError:
+                return None
 
-        price       = to_int(d.get('closePrice', 0))
-        change      = to_int(d.get('compareToPreviousClosePrice', 0))
-        change_rate = to_float(d.get('fluctuationsRatio', 0))
+        # 현재가 (#_nowVal)
+        price = parse_num('#_nowVal')
+        if not price:
+            return None
+        price = int(price)
 
-        # 시간외 단일가 (장 마감 후 있을 경우)
-        after_raw   = d.get('afterHoursClosePrice') or d.get('afterClosePrice')
-        after_price = to_int(after_raw) if after_raw else None
+        # 등락 (#_diff), 등락률 (#_rate)
+        change = parse_num('#_diff')
+        change_rate = parse_num('#_rate')
+
+        # 상승/하락 부호 판단 (em.blind 텍스트: "상승" / "하락" / "보합")
+        sign_el = soup.select_one('.no_today .ico')
+        if sign_el:
+            cls = ' '.join(sign_el.get('class', []))
+            if 'down' in cls or 'fall' in cls:
+                if change and change > 0:
+                    change = -change
+                if change_rate and change_rate > 0:
+                    change_rate = -change_rate
+
+        # 시간외 단일가 (.info_area .after 또는 .after_market_info)
+        after_price = None
         after_change_rate = None
 
-        if after_price and price:
+        # 네이버 금융 시간외 단일가 블록 탐색
+        for sel in ['.section_sub_info .sub_info_inner',
+                    '.wrap_market_sum',
+                    '#content .after_market']:
+            block = soup.select_one(sel)
+            if block:
+                nums = [n for span in block.select('span.blind, em.blind')
+                        for n in [span.get_text(strip=True).replace(',', '')]
+                        if n.isdigit() and len(n) >= 4]
+                if nums:
+                    after_price = int(nums[0])
+                    break
+
+        if after_price and after_price == price:
+            after_price = None  # 정규장 종가와 같으면 시간외 아님
+
+        if after_price:
             after_change_rate = (after_price - price) / price * 100
 
         return {
             'price': price,
-            'change': change,
-            'change_rate': change_rate,
+            'change': int(change) if change else 0,
+            'change_rate': change_rate or 0.0,
             'after_price': after_price,
             'after_change_rate': after_change_rate,
-            'is_after': after_price is not None and after_price != price,
+            'is_after': after_price is not None,
         }
     except Exception:
         return None
