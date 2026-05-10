@@ -5,6 +5,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta, date
 from pykrx import stock as krx
+import requests
 import json
 import warnings
 warnings.filterwarnings('ignore')
@@ -75,6 +76,47 @@ def color_pct(v):
     if v is None: return 'black'
     return '#0066cc' if v >= 0 else '#cc0000'
 
+# ── 실시간 시세 조회 (네이버 금융, 캐시 1분) ─────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_realtime(code: str) -> dict | None:
+    """
+    네이버 금융 모바일 API로 실시간 현재가 + 시간외 단일가 조회.
+    반환: {price, change, change_rate, after_price, after_change_rate, is_after}
+    """
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)'}
+        url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        r = requests.get(url, headers=headers, timeout=5)
+        d = r.json()
+
+        def to_int(s):
+            return int(str(s).replace(',', '').replace('+', '')) if s else 0
+        def to_float(s):
+            return float(str(s).replace(',', '').replace('+', '').replace('%', '')) if s else 0.0
+
+        price       = to_int(d.get('closePrice', 0))
+        change      = to_int(d.get('compareToPreviousClosePrice', 0))
+        change_rate = to_float(d.get('fluctuationsRatio', 0))
+
+        # 시간외 단일가 (장 마감 후 있을 경우)
+        after_raw   = d.get('afterHoursClosePrice') or d.get('afterClosePrice')
+        after_price = to_int(after_raw) if after_raw else None
+        after_change_rate = None
+
+        if after_price and price:
+            after_change_rate = (after_price - price) / price * 100
+
+        return {
+            'price': price,
+            'change': change,
+            'change_rate': change_rate,
+            'after_price': after_price,
+            'after_change_rate': after_change_rate,
+            'is_after': after_price is not None and after_price != price,
+        }
+    except Exception:
+        return None
+
 # ── 사이드바 ─────────────────────────────────────────────
 with st.sidebar:
     st.title("📈 포트폴리오 시뮬레이터")
@@ -83,6 +125,7 @@ with st.sidebar:
     scenario = st.radio(
         "시나리오",
         options=[
+            "0. 실시간 현재가 (시간외 포함)",
             "1. 특정 날짜 전종목 매도",
             "2. 일부 종목 보유 · 나머지 매도",
             "3. 기간별 가치 변화 차트",
@@ -93,9 +136,95 @@ with st.sidebar:
     )
 
 # ════════════════════════════════════════════════════════
+#   시나리오 0: 실시간 현재가 (시간외 포함)
+# ════════════════════════════════════════════════════════
+if scenario.startswith("0"):
+    st.header("⚡ 실시간 현재가 포트폴리오 평가")
+    st.caption("네이버 금융 기준 · 1분 캐시 · 장 마감 후 시간외 단일가 자동 반영")
+
+    if st.button("🔄 새로고침", use_container_width=False):
+        st.cache_data.clear()
+
+    rows = []
+    total_val = 0
+    has_after = False
+
+    with st.spinner("실시간 시세 조회 중..."):
+        for name, info in PORTFOLIO.items():
+            cost = info['shares'] * info['avg_price']
+            d = fetch_realtime(info['code'])
+
+            if d is None:
+                rows.append({'종목': name, '현재가': '-', '등락': '-', '등락률': '-',
+                             '시간외 단가': '-', '시간외 등락률': '-',
+                             '기준가': '-', '평가금액': '-', '손익': '-', '수익률': '-',
+                             '_pct': None, '_is_after': False})
+                continue
+
+            # 시간외가 있으면 시간외 기준, 없으면 현재가 기준
+            use_price = d['after_price'] if d['is_after'] else d['price']
+            val       = info['shares'] * use_price
+            p         = val - cost
+            p_pct     = p / cost * 100
+
+            if d['is_after']:
+                has_after = True
+
+            rows.append({
+                '종목':        name,
+                '현재가':      krw(d['price']),
+                '등락':        profit_str(d['change']),
+                '등락률':      pct(d['change_rate']),
+                '시간외 단가': krw(d['after_price']) if d['is_after'] else '-',
+                '시간외 등락률': pct(d['after_change_rate']) if d['is_after'] else '-',
+                '기준가':      ('시간외' if d['is_after'] else '정규장'),
+                '평가금액':    krw(val),
+                '손익':        profit_str(p),
+                '수익률':      pct(p_pct),
+                '_pct':        p_pct,
+                '_is_after':   d['is_after'],
+            })
+            total_val += val
+
+    total_profit = total_val - TOTAL_COST
+    total_pct_v  = total_profit / TOTAL_COST * 100
+
+    # 요약
+    c1, c2, c3 = st.columns(3)
+    c1.metric("총 평가금액", krw(total_val))
+    c2.metric("총 손익",     profit_str(total_profit))
+    c3.metric("전체 수익률", pct(total_pct_v))
+
+    if has_after:
+        st.info("일부 종목에 시간외 단일가가 반영되었습니다.")
+
+    st.divider()
+
+    df = pd.DataFrame(rows)
+    st.dataframe(df.drop(columns=['_pct', '_is_after']),
+                 use_container_width=True, hide_index=True)
+
+    # 수익률 막대 차트
+    df_chart = df.dropna(subset=['_pct'])
+    if not df_chart.empty:
+        fig = px.bar(
+            df_chart, x='종목', y='_pct', text='수익률',
+            color='_pct',
+            color_continuous_scale=['#cc0000', '#ffffff', '#0066cc'],
+            color_continuous_midpoint=0,
+            title="종목별 현재 수익률",
+            labels={'_pct': '수익률 (%)'},
+        )
+        fig.update_traces(textposition='outside')
+        fig.update_layout(coloraxis_showscale=False, height=380)
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.caption(f"조회 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# ════════════════════════════════════════════════════════
 #   시나리오 1: 특정 날짜 전종목 매도
 # ════════════════════════════════════════════════════════
-if scenario.startswith("1"):
+elif scenario.startswith("1"):
     st.header("📅 특정 날짜 전종목 매도 시뮬레이션")
     sell_date = st.date_input("매도 날짜", value=date.today(), max_value=date.today())
 
