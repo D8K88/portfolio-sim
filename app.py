@@ -76,88 +76,74 @@ def color_pct(v):
     if v is None: return 'black'
     return '#0066cc' if v >= 0 else '#cc0000'
 
-# ── 실시간 시세 조회 (네이버 금융 HTML 파싱, 캐시 1분) ────
+# ── 실시간 시세 조회 (네이버 폴링 API, 캐시 1분) ──────────
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_realtime(code: str) -> dict | None:
     """
-    네이버 금융 PC 페이지 파싱으로 실시간 현재가 + 시간외 단일가 조회.
+    네이버 금융 실시간 폴링 API (JSON) 사용.
     - 정규장 중: 실시간 체결가
     - 장 마감 후: 종가 + 시간외 단일가(있을 경우)
+    JavaScript 렌더링 불필요, 순수 JSON 응답.
     """
+    def to_int(v) -> int:
+        try:
+            return int(str(v).replace(',', '').replace('+', '').strip())
+        except (ValueError, TypeError):
+            return 0
+
+    def to_float(v) -> float:
+        try:
+            return float(str(v).replace(',', '').replace('+', '')
+                         .replace('%', '').strip())
+        except (ValueError, TypeError):
+            return 0.0
+
     try:
-        from bs4 import BeautifulSoup
-        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        # ① 실시간 현재가 (정규장/시간외 공통)
+        url = (f"https://polling.finance.naver.com/api/realtime"
+               f"/domestic/stock/{code}")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                          'AppleWebKit/537.36 (KHTML, like Gecko) '
-                          'Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'ko-KR,ko;q=0.9',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
             'Referer': 'https://finance.naver.com/',
         }
-        r = requests.get(url, headers=headers, timeout=8)
-        r.encoding = 'euc-kr'
-        soup = BeautifulSoup(r.text, 'html.parser')
+        r = requests.get(url, headers=headers, timeout=6)
+        d = r.json().get('datas', [{}])[0]
 
-        def parse_num(sel) -> float | None:
-            el = soup.select_one(sel)
-            if not el:
-                return None
-            txt = el.get_text(strip=True).replace(',', '').replace('+', '')
-            try:
-                return float(txt)
-            except ValueError:
-                return None
+        price       = to_int(d.get('closePrice', 0))
+        change      = to_int(d.get('compareToPreviousClosePrice', 0))
+        change_rate = to_float(d.get('fluctuationsRatio', 0))
 
-        # 현재가 (#_nowVal)
-        price = parse_num('#_nowVal')
-        if not price:
+        # 하락이면 음수로
+        trade_type = str(d.get('tradeStopType', ''))
+        if d.get('fluctuationType') in ('FALL', '2') or 'FALL' in trade_type:
+            change      = -abs(change)
+            change_rate = -abs(change_rate)
+
+        if price == 0:
             return None
-        price = int(price)
 
-        # 등락 (#_diff), 등락률 (#_rate)
-        change = parse_num('#_diff')
-        change_rate = parse_num('#_rate')
-
-        # 상승/하락 부호 판단 (em.blind 텍스트: "상승" / "하락" / "보합")
-        sign_el = soup.select_one('.no_today .ico')
-        if sign_el:
-            cls = ' '.join(sign_el.get('class', []))
-            if 'down' in cls or 'fall' in cls:
-                if change and change > 0:
-                    change = -change
-                if change_rate and change_rate > 0:
-                    change_rate = -change_rate
-
-        # 시간외 단일가 (.info_area .after 또는 .after_market_info)
-        after_price = None
+        # ② 시간외 단일가
+        after_price       = None
         after_change_rate = None
-
-        # 네이버 금융 시간외 단일가 블록 탐색
-        for sel in ['.section_sub_info .sub_info_inner',
-                    '.wrap_market_sum',
-                    '#content .after_market']:
-            block = soup.select_one(sel)
-            if block:
-                nums = [n for span in block.select('span.blind, em.blind')
-                        for n in [span.get_text(strip=True).replace(',', '')]
-                        if n.isdigit() and len(n) >= 4]
-                if nums:
-                    after_price = int(nums[0])
-                    break
-
-        if after_price and after_price == price:
-            after_price = None  # 정규장 종가와 같으면 시간외 아님
-
-        if after_price:
-            after_change_rate = (after_price - price) / price * 100
+        try:
+            url2 = (f"https://polling.finance.naver.com/api/realtime"
+                    f"/domestic/stock/{code}/overtime")
+            r2 = requests.get(url2, headers=headers, timeout=4)
+            d2 = r2.json().get('datas', [{}])[0]
+            ap = to_int(d2.get('closePrice', 0))
+            if ap and ap != price:
+                after_price       = ap
+                after_change_rate = (ap - price) / price * 100
+        except Exception:
+            pass
 
         return {
-            'price': price,
-            'change': int(change) if change else 0,
-            'change_rate': change_rate or 0.0,
-            'after_price': after_price,
+            'price':            price,
+            'change':           change,
+            'change_rate':      change_rate,
+            'after_price':      after_price,
             'after_change_rate': after_change_rate,
-            'is_after': after_price is not None,
+            'is_after':         after_price is not None,
         }
     except Exception:
         return None
