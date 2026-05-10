@@ -148,6 +148,28 @@ def fetch_realtime(code: str) -> dict | None:
     except Exception:
         return None
 
+@st.cache_data(ttl=60, show_spinner=False)
+def debug_api_response(code: str) -> dict:
+    """삼성전자 API 원본 응답 확인용 (디버그)"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'Referer': 'https://finance.naver.com/',
+    }
+    result = {}
+    try:
+        url = f"https://polling.finance.naver.com/api/realtime/domestic/stock/{code}"
+        r = requests.get(url, headers=headers, timeout=6)
+        result['polling_api'] = r.json()
+    except Exception as e:
+        result['polling_api_error'] = str(e)
+    try:
+        url2 = f"https://m.stock.naver.com/api/stock/{code}/basic"
+        r2 = requests.get(url2, headers=headers, timeout=6)
+        result['mobile_api'] = r2.json()
+    except Exception as e:
+        result['mobile_api_error'] = str(e)
+    return result
+
 # ── 사이드바 ─────────────────────────────────────────────
 with st.sidebar:
     st.title("📈 포트폴리오 시뮬레이터")
@@ -251,6 +273,11 @@ if scenario.startswith("0"):
         st.plotly_chart(fig, use_container_width=True)
 
     st.caption(f"조회 시각: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # ── 임시 디버그 (API 원본 응답 확인) ──
+    with st.expander("🔧 API 디버그 (삼성전자 005930)"):
+        debug = debug_api_response("005930")
+        st.json(debug)
 
 # ════════════════════════════════════════════════════════
 #   시나리오 1: 특정 날짜 전종목 매도
