@@ -154,6 +154,17 @@ with st.sidebar:
 # 전체 보기일 때 테이블에 소유자 컬럼 추가 여부
 SHOW_OWNER = (owner_sel == "전체")
 
+# 포트폴리오가 비어있으면 안내 후 중단
+if len(PORT) == 0:
+    st.warning(f"**'{owner_sel}'** 계좌에 종목이 없습니다. "
+               "Streamlit Cloud Secrets에 owner 필드가 올바르게 설정되었는지 확인해 주세요.")
+    st.stop()
+
+def safe_pct(profit, cost):
+    """0 나눗셈 방지 수익률 계산"""
+    if not cost: return None
+    return profit / cost * 100
+
 # ════════════════════════════════════════════════════════
 #   공통: 소유자별 소계 출력
 # ════════════════════════════════════════════════════════
@@ -229,7 +240,7 @@ if scenario.startswith("0"):
     c1, c2, c3 = st.columns(3)
     c1.metric("총 평가금액", krw(total_val))
     c2.metric("총 손익",     profit_str(total_profit))
-    c3.metric("전체 수익률", pct(total_profit / TOTAL_COST * 100))
+    c3.metric("전체 수익률", pct(safe_pct(total_profit, TOTAL_COST)))
     st.divider()
 
     df = pd.DataFrame(rows)
@@ -299,7 +310,7 @@ elif scenario.startswith("1"):
         c1, c2, c3 = st.columns(3)
         c1.metric("총 매도금액", krw(total_sell))
         c2.metric("총 손익",     profit_str(total_profit))
-        c3.metric("전체 수익률", pct(total_profit / TOTAL_COST * 100))
+        c3.metric("전체 수익률", pct(safe_pct(total_profit, TOTAL_COST)))
         st.divider()
 
         df = pd.DataFrame(rows)
@@ -375,7 +386,7 @@ elif scenario.startswith("2"):
             c1, c2, c3 = st.columns(3)
             c1.metric("전체 평가금액", krw(total_val))
             c2.metric("전체 손익",     profit_str(total_profit))
-            c3.metric("전체 수익률",   pct(total_profit / TOTAL_COST * 100))
+            c3.metric("전체 수익률",   pct(safe_pct(total_profit, TOTAL_COST)))
             st.divider()
 
             df = pd.DataFrame(rows)
@@ -578,7 +589,7 @@ elif scenario.startswith("5"):
         c1, c2, c3 = st.columns(3)
         c1.metric("최고가 기준 총매도액", krw(total_peak_val))
         c2.metric("최대 가능 손익",      profit_str(total_profit))
-        c3.metric("최대 가능 수익률",    pct(total_profit / target_cost * 100))
+        c3.metric("최대 가능 수익률",    pct(safe_pct(total_profit, target_cost)))
         st.caption("※ 각 종목을 각자의 최고가 날에 매도했을 경우의 이론적 최댓값")
         st.divider()
 
