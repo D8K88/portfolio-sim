@@ -210,7 +210,7 @@ if scenario.startswith("0"):
             cost = info["shares"] * info["avg_price"]
             d = fetch_realtime(info["code"])
             if d is None:
-                row = {"종목": name, "현재가": "-", "등락률": "-",
+                row = {"종목": name, "수량": info["shares"], "현재가": "-", "등락률": "-",
                        "시간외 단가": "-", "시간외 등락률": "-",
                        "기준": "-", "평가금액": "-", "손익": "-", "수익률": "-",
                        "_pct": None}
@@ -222,6 +222,7 @@ if scenario.startswith("0"):
                 total_val += val
                 row = {
                     "종목":        name,
+                    "수량":        info["shares"],
                     "현재가":      krw(d["price"]),
                     "등락률":      pct(d["change_rate"]),
                     "시간외 단가": krw(d["after_price"]) if d["is_after"] else "-",
@@ -245,7 +246,7 @@ if scenario.startswith("0"):
 
     df = pd.DataFrame(rows)
     cols = ["소유자"] if SHOW_OWNER else []
-    cols += ["종목","현재가","등락률","시간외 단가","시간외 등락률","기준","평가금액","손익","수익률"]
+    cols += ["종목","수량","현재가","등락률","시간외 단가","시간외 등락률","기준","평가금액","손익","수익률"]
     st.dataframe(df[[c for c in cols if c in df.columns]],
                  use_container_width=True, hide_index=True)
 
