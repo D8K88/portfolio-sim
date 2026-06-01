@@ -142,7 +142,7 @@ def get_price_series(code: str, start: str, end: str) -> pd.Series:
 #   사이드바
 # ════════════════════════════════════════════════════════
 with st.sidebar:
-    st.title("📈 포트폴리오 시뮬레이터")
+    st.markdown("#### 📈 포트폴리오 시뮬레이터")
     st.divider()
 
     # ── 계좌(소유자) 선택 ──
