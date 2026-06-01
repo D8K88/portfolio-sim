@@ -18,52 +18,18 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ── GitHub Gist 포트폴리오 로드 / 저장 ───────────────────
-def _gist_headers():
-    token = st.secrets.get("github", {}).get("token", "")
-    return {"Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json"}
-
-def _gist_id():
-    return st.secrets.get("github", {}).get("gist_id", "")
-
-@st.cache_data(ttl=30, show_spinner=False)
+# ── 포트폴리오 로드 (Streamlit Secrets) ──────────────────
 def load_portfolio() -> dict:
-    """GitHub Gist → Secrets 순서로 포트폴리오 로드"""
-    gid = _gist_id()
-    if gid:
-        try:
-            r = requests.get(f"https://api.github.com/gists/{gid}",
-                             headers=_gist_headers(), timeout=8)
-            if r.status_code == 200:
-                files = r.json().get("files", {})
-                content = next(iter(files.values()))["content"]
-                return json.loads(content)
-        except Exception:
-            pass
-    # Fallback: Secrets
     try:
         return json.loads(st.secrets["portfolio"]["json"])
     except Exception:
-        st.error("포트폴리오 데이터를 불러올 수 없습니다. Secrets 또는 GitHub Gist 설정을 확인해 주세요.")
+        st.error("포트폴리오 데이터가 없습니다. Streamlit Cloud → Secrets를 확인해 주세요.")
         st.stop()
 
-def save_portfolio(portfolio: dict) -> bool:
-    """GitHub Gist에 포트폴리오 저장"""
-    gid = _gist_id()
-    if not gid:
-        return False
-    try:
-        content = json.dumps(portfolio, ensure_ascii=False, indent=2)
-        r = requests.patch(
-            f"https://api.github.com/gists/{gid}",
-            headers=_gist_headers(),
-            json={"files": {"portfolio.json": {"content": content}}},
-            timeout=8,
-        )
-        return r.status_code == 200
-    except Exception:
-        return False
+def make_secrets_toml(portfolio: dict) -> str:
+    """편집된 포트폴리오로 새 Secrets TOML 문자열 생성"""
+    j = json.dumps(portfolio, ensure_ascii=False)
+    return f"[portfolio]\njson = '{j}'"
 
 ALL_PORTFOLIO = load_portfolio()
 
@@ -683,19 +649,10 @@ elif scenario.startswith("5"):
 # ════════════════════════════════════════════════════════
 elif scenario == "⚙️ 종목 편집":
     st.header("⚙️ 종목 편집")
+    st.caption("수정 후 **저장** 버튼을 누르면 Secrets에 붙여넣을 내용이 자동 생성됩니다.")
 
-    if not _gist_id():
-        st.warning("GitHub Gist가 설정되지 않았습니다. Secrets에 `[github]` 섹션을 추가해 주세요.")
-        st.code("""
-[github]
-token   = "ghp_xxxx"   # GitHub Personal Access Token (gist 권한)
-gist_id = "xxxx"       # 비공개 Gist ID
-""", language="toml")
-        st.stop()
+    owner_options = sorted(set(OWNERS + ["본인", "윤선화"]))
 
-    st.caption("종목 추가·수정·삭제 후 💾 저장 버튼을 누르면 즉시 반영됩니다.")
-
-    # 현재 포트폴리오 → DataFrame
     edit_rows = [
         {
             "종목명":     name,
@@ -706,10 +663,9 @@ gist_id = "xxxx"       # 비공개 Gist ID
         }
         for name, info in ALL_PORTFOLIO.items()
     ]
-    edit_df = pd.DataFrame(edit_rows)
 
     edited = st.data_editor(
-        edit_df,
+        pd.DataFrame(edit_rows),
         num_rows="dynamic",
         use_container_width=True,
         column_config={
@@ -717,16 +673,12 @@ gist_id = "xxxx"       # 비공개 Gist ID
             "종목코드":   st.column_config.TextColumn("종목코드 (6자리)", required=True, max_chars=6),
             "보유수량":   st.column_config.NumberColumn("보유수량", min_value=0, step=1, format="%d"),
             "평균매입가": st.column_config.NumberColumn("평균매입가 (원)", min_value=0, format="%d"),
-            "소유자":     st.column_config.SelectboxColumn("소유자", options=OWNERS + ["본인", "윤선화"]),
+            "소유자":     st.column_config.SelectboxColumn("소유자", options=owner_options),
         },
         hide_index=True,
     )
 
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        save_btn = st.button("💾 저장", type="primary", use_container_width=True)
-
-    if save_btn:
+    if st.button("💾 저장 (Secrets 내용 생성)", type="primary", use_container_width=True):
         new_portfolio = {}
         errors = []
         for _, row in edited.iterrows():
@@ -739,22 +691,21 @@ gist_id = "xxxx"       # 비공개 Gist ID
                 continue
             new_portfolio[name] = {
                 "code":      code,
-                "shares":    int(row["보유수량"])    if pd.notna(row["보유수량"])    else 0,
-                "avg_price": int(row["평균매입가"])  if pd.notna(row["평균매입가"])  else 0,
-                "owner":     str(row["소유자"])      if pd.notna(row["소유자"])      else "",
+                "shares":    int(row["보유수량"])   if pd.notna(row["보유수량"])   else 0,
+                "avg_price": int(row["평균매입가"]) if pd.notna(row["평균매입가"]) else 0,
+                "owner":     str(row["소유자"])     if pd.notna(row["소유자"])     else "",
             }
 
-        if errors:
-            for e in errors:
-                st.error(e)
-        elif not new_portfolio:
-            st.warning("저장할 종목이 없습니다.")
-        else:
-            with st.spinner("저장 중..."):
-                ok = save_portfolio(new_portfolio)
-            if ok:
-                st.success(f"✅ {len(new_portfolio)}개 종목 저장 완료!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error("저장 실패. GitHub 토큰과 Gist ID를 확인해 주세요.")
+        for e in errors:
+            st.error(e)
+
+        if new_portfolio and not errors:
+            toml_str = make_secrets_toml(new_portfolio)
+            st.success(f"✅ {len(new_portfolio)}개 종목 준비 완료. 아래 내용을 Streamlit Secrets에 붙여넣고 Save 하세요.")
+            st.code(toml_str, language="toml")
+
+            st.info(
+                "**적용 방법:** "
+                "[share.streamlit.io](https://share.streamlit.io) → 앱 ⋮ → "
+                "Settings → Secrets → 전체 교체 → **Save**"
+            )
